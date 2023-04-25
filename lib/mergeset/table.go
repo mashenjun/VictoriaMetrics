@@ -17,6 +17,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storagepacelimiter"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/syncwg"
 )
@@ -271,7 +272,7 @@ func OpenTable(path string, flushCallback func(), prepareBlock PrepareBlockCallb
 	}
 
 	// Open table parts.
-	pws, err := openParts(path)
+	pws, err := openRemoteParts(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open table parts at %q: %w", path, err)
 	}
@@ -287,19 +288,19 @@ func OpenTable(path string, flushCallback func(), prepareBlock PrepareBlockCallb
 		stopCh:        make(chan struct{}),
 	}
 	tb.rawItems.init()
-	tb.startPartMergers()
-	tb.startRawItemsFlusher()
+	//tb.startPartMergers()
+	//tb.startRawItemsFlusher()
 
 	var m TableMetrics
 	tb.UpdateMetrics(&m)
 	logger.Infof("table %q has been opened in %.3f seconds; partsCount: %d; blocksCount: %d, itemsCount: %d; sizeBytes: %d",
 		path, time.Since(startTime).Seconds(), m.PartsCount, m.BlocksCount, m.ItemsCount, m.SizeBytes)
 
-	tb.convertersWG.Add(1)
-	go func() {
-		tb.convertToV1280()
-		tb.convertersWG.Done()
-	}()
+	//tb.convertersWG.Add(1)
+	//go func() {
+	//	tb.convertToV1280()
+	//	tb.convertersWG.Done()
+	//}()
 
 	if flushCallback != nil {
 		tb.flushCallbackWorkerWG.Add(1)
@@ -322,6 +323,68 @@ func OpenTable(path string, flushCallback func(), prepareBlock PrepareBlockCallb
 		}()
 	}
 
+	return tb, nil
+}
+
+func SyncTable(path string, localDir string, flushCallback func(), prepareBlock PrepareBlockCallback, isReadOnly *uint32) (*Table, error) {
+	path = filepath.Clean(path)
+	logger.Infof("opening table %q...", path)
+	startTime := time.Now()
+
+	// Create a directory for the table if it doesn't exist yet.
+	if err := fs.MkdirAllIfNotExist(path); err != nil {
+		return nil, fmt.Errorf("cannot create directory %q: %w", path, err)
+	}
+
+	// Protect from concurrent opens.
+	flockF, err := fs.CreateFlockFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Open table parts.
+	pws, err := syncRemoteParts(path, localDir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open table parts at %q: %w", path, err)
+	}
+
+	tb := &Table{
+		path:          path,
+		flushCallback: flushCallback,
+		prepareBlock:  prepareBlock,
+		isReadOnly:    isReadOnly,
+		parts:         pws,
+		mergeIdx:      uint64(time.Now().UnixNano()),
+		flockF:        flockF,
+		stopCh:        make(chan struct{}),
+	}
+	tb.rawItems.init()
+
+	var m TableMetrics
+	tb.UpdateMetrics(&m)
+	logger.Infof("table %q has been opened in %.3f seconds; partsCount: %d; blocksCount: %d, itemsCount: %d; sizeBytes: %d",
+		path, time.Since(startTime).Seconds(), m.PartsCount, m.BlocksCount, m.ItemsCount, m.SizeBytes)
+
+	if flushCallback != nil {
+		tb.flushCallbackWorkerWG.Add(1)
+		go func() {
+			// call flushCallback once per 10 seconds in order to improve the effectiveness of caches,
+			// which are reset by the flushCallback.
+			tc := time.NewTicker(10 * time.Second)
+			for {
+				select {
+				case <-tb.stopCh:
+					tb.flushCallback()
+					tb.flushCallbackWorkerWG.Done()
+					return
+				case <-tc.C:
+					if atomic.CompareAndSwapUint32(&tb.needFlushCallbackCall, 1, 0) {
+						tb.flushCallback()
+					}
+				}
+			}
+		}()
+	}
 	return tb, nil
 }
 
@@ -348,32 +411,32 @@ func (tb *Table) MustClose() {
 	startTime = time.Now()
 
 	// Flush raw items the last time before exit.
-	tb.flushRawItems(true)
+	//tb.flushRawItems(true)
 
 	// Flush inmemory parts to disk.
-	var pws []*partWrapper
-	tb.partsLock.Lock()
-	for _, pw := range tb.parts {
-		if pw.mp == nil {
-			continue
-		}
-		if pw.isInMerge {
-			logger.Panicf("BUG: the inmemory part %s mustn't be in merge after stopping parts merger in %q", &pw.mp.ph, tb.path)
-		}
-		pw.isInMerge = true
-		pws = append(pws, pw)
-	}
-	tb.partsLock.Unlock()
-
-	if err := tb.mergePartsOptimal(pws, nil); err != nil {
-		logger.Panicf("FATAL: cannot flush inmemory parts to files in %q: %s", tb.path, err)
-	}
-	logger.Infof("%d inmemory parts have been flushed to files in %.3f seconds on %q", len(pws), time.Since(startTime).Seconds(), tb.path)
-
-	logger.Infof("waiting for flush callback worker to stop on %q...", tb.path)
-	startTime = time.Now()
-	tb.flushCallbackWorkerWG.Wait()
-	logger.Infof("flush callback worker stopped in %.3f seconds on %q", time.Since(startTime).Seconds(), tb.path)
+	//var pws []*partWrapper
+	//tb.partsLock.Lock()
+	//for _, pw := range tb.parts {
+	//	if pw.mp == nil {
+	//		continue
+	//	}
+	//	if pw.isInMerge {
+	//		logger.Panicf("BUG: the inmemory part %s mustn't be in merge after stopping parts merger in %q", &pw.mp.ph, tb.path)
+	//	}
+	//	pw.isInMerge = true
+	//	pws = append(pws, pw)
+	//}
+	//tb.partsLock.Unlock()
+	//
+	//if err := tb.mergePartsOptimal(pws, nil); err != nil {
+	//	logger.Panicf("FATAL: cannot flush inmemory parts to files in %q: %s", tb.path, err)
+	//}
+	//logger.Infof("%d inmemory parts have been flushed to files in %.3f seconds on %q", len(pws), time.Since(startTime).Seconds(), tb.path)
+	//
+	//logger.Infof("waiting for flush callback worker to stop on %q...", tb.path)
+	//startTime = time.Now()
+	//tb.flushCallbackWorkerWG.Wait()
+	//logger.Infof("flush callback worker stopped in %.3f seconds on %q", time.Since(startTime).Seconds(), tb.path)
 
 	// Remove references to parts from the tb, so they may be eventually closed
 	// after all the searches are done.
@@ -1124,6 +1187,66 @@ func openParts(path string) ([]*partWrapper, error) {
 		pws = append(pws, pw)
 	}
 
+	return pws, nil
+}
+
+func openRemoteParts(path string) ([]*partWrapper, error) {
+	// Open remote parts.
+	names, err := remotefs.ListRemoteDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read remote directory: %w", err)
+	}
+	var pws []*partWrapper
+	for _, fn := range names {
+		if fn == convertToV1280FileName {
+			continue
+		}
+		if isSpecialDir(fn) {
+			// Skip special dirs.
+			continue
+		}
+		partPath := path + "/" + fn
+		p, err := openRemotePart(partPath)
+		if err != nil {
+			mustCloseParts(pws)
+			return nil, fmt.Errorf("cannot open remote part %q: %w", partPath, err)
+		}
+		pw := &partWrapper{
+			p:        p,
+			refCount: 1,
+		}
+		pws = append(pws, pw)
+	}
+	return pws, nil
+}
+
+func syncRemoteParts(remotePath string, localDir string) ([]*partWrapper, error) {
+	// Open remote parts.
+	names, err := remotefs.ListRemoteDir(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read remote directory: %w", err)
+	}
+	var pws []*partWrapper
+	for _, fn := range names {
+		if fn == convertToV1280FileName {
+			continue
+		}
+		if isSpecialDir(fn) {
+			// Skip special dirs.
+			continue
+		}
+		partPath := remotePath + "/" + fn
+		p, err := syncRemotePart(partPath, localDir)
+		if err != nil {
+			mustCloseParts(pws)
+			return nil, fmt.Errorf("cannot open remote part %q: %w", partPath, err)
+		}
+		pw := &partWrapper{
+			p:        p,
+			refCount: 1,
+		}
+		pws = append(pws, pw)
+	}
 	return pws, nil
 }
 

@@ -20,14 +20,17 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/procutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/common"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/pushmetrics"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/metrics"
 )
 
 var (
-	retentionPeriod   = flagutil.NewDuration("retentionPeriod", "1", "Data with timestamps outside the retentionPeriod is automatically deleted")
-	httpListenAddr    = flag.String("httpListenAddr", ":8482", "Address to listen for http connections")
-	storageDataPath   = flag.String("storageDataPath", "vmstorage-data", "Path to storage data")
+	retentionPeriod = flagutil.NewDuration("retentionPeriod", "1", "Data with timestamps outside the retentionPeriod is automatically deleted")
+	httpListenAddr  = flag.String("httpListenAddr", ":8482", "Address to listen for http connections")
+	storageDataPath = flag.String("storageDataPath", "vmstorage-data", "Path to storage data")
+	remoteDataPath  = flag.String("remoteDataPath", "", "Source path for data on the remote storage. "+
+		"Example: s3://bucket/path/to/backup/dir")
 	vminsertAddr      = flag.String("vminsertAddr", ":8400", "TCP address to accept connections from vminsert services")
 	vmselectAddr      = flag.String("vmselectAddr", ":8401", "TCP address to accept connections from vmselect services")
 	snapshotAuthKey   = flag.String("snapshotAuthKey", "", "authKey, which must be passed in query string to /snapshot* pages")
@@ -89,6 +92,10 @@ func main() {
 	}
 	logger.Infof("opening storage at %q with -retentionPeriod=%s", *storageDataPath, retentionPeriod)
 	startTime := time.Now()
+	// parse bucket config and init config
+	if err := remotefs.InitRemoteFSBySchemaPath(*remoteDataPath); err != nil {
+		logger.Fatalf("cannot init bucket reader: %s", err)
+	}
 	strg, err := storage.OpenStorage(*storageDataPath, retentionPeriod.Msecs, *maxHourlySeries, *maxDailySeries)
 	if err != nil {
 		logger.Fatalf("cannot open a storage at %s with -retentionPeriod=%s: %s", *storageDataPath, retentionPeriod, err)
@@ -108,10 +115,10 @@ func main() {
 	registerStorageMetrics(strg)
 
 	common.StartUnmarshalWorkers()
-	vminsertSrv, err := servers.NewVMInsertServer(*vminsertAddr, strg)
-	if err != nil {
-		logger.Fatalf("cannot create a server with -vminsertAddr=%s: %s", *vminsertAddr, err)
-	}
+	// vminsertSrv, err := servers.NewVMInsertServer(*vminsertAddr, strg)
+	// if err != nil {
+	// 	logger.Fatalf("cannot create a server with -vminsertAddr=%s: %s", *vminsertAddr, err)
+	// }
 	vmselectSrv, err := servers.NewVMSelectServer(*vmselectAddr, strg)
 	if err != nil {
 		logger.Fatalf("cannot create a server with -vmselectAddr=%s: %s", *vmselectAddr, err)
@@ -136,7 +143,7 @@ func main() {
 	startTime = time.Now()
 	stopStaleSnapshotsRemover()
 	vmselectSrv.MustStop()
-	vminsertSrv.MustStop()
+	// vminsertSrv.MustStop()
 	common.StopUnmarshalWorkers()
 	logger.Infof("successfully shut down the service in %.3f seconds", time.Since(startTime).Seconds())
 
@@ -166,104 +173,108 @@ func newRequestHandler(strg *storage.Storage) httpserver.RequestHandler {
 func requestHandler(w http.ResponseWriter, r *http.Request, strg *storage.Storage) bool {
 	path := r.URL.Path
 	if path == "/internal/force_merge" {
-		authKey := r.FormValue("authKey")
-		if authKey != *forceMergeAuthKey {
-			httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -forceMergeAuthKey command line flag", authKey)
-			return true
-		}
-		// Run force merge in background
-		partitionNamePrefix := r.FormValue("partition_prefix")
-		go func() {
-			activeForceMerges.Inc()
-			defer activeForceMerges.Dec()
-			logger.Infof("forced merge for partition_prefix=%q has been started", partitionNamePrefix)
-			startTime := time.Now()
-			if err := strg.ForceMergePartitions(partitionNamePrefix); err != nil {
-				logger.Errorf("error in forced merge for partition_prefix=%q: %s", partitionNamePrefix, err)
-				return
-			}
-			logger.Infof("forced merge for partition_prefix=%q has been successfully finished in %.3f seconds", partitionNamePrefix, time.Since(startTime).Seconds())
-		}()
+		// disable force merge
 		return true
+		//authKey := r.FormValue("authKey")
+		//if authKey != *forceMergeAuthKey {
+		//	httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -forceMergeAuthKey command line flag", authKey)
+		//	return true
+		//}
+		//// Run force merge in background
+		//partitionNamePrefix := r.FormValue("partition_prefix")
+		//go func() {
+		//	activeForceMerges.Inc()
+		//	defer activeForceMerges.Dec()
+		//	logger.Infof("forced merge for partition_prefix=%q has been started", partitionNamePrefix)
+		//	startTime := time.Now()
+		//	if err := strg.ForceMergePartitions(partitionNamePrefix); err != nil {
+		//		logger.Errorf("error in forced merge for partition_prefix=%q: %s", partitionNamePrefix, err)
+		//		return
+		//	}
+		//	logger.Infof("forced merge for partition_prefix=%q has been successfully finished in %.3f seconds", partitionNamePrefix, time.Since(startTime).Seconds())
+		//}()
+		//return true
 	}
 	if path == "/internal/force_flush" {
-		authKey := r.FormValue("authKey")
-		if authKey != *forceFlushAuthKey {
-			httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -forceFlushAuthKey command line flag", authKey)
-			return true
-		}
-		logger.Infof("flushing storage to make pending data available for reading")
-		strg.DebugFlush()
+		// disable force merge
 		return true
+		//authKey := r.FormValue("authKey")
+		//if authKey != *forceFlushAuthKey {
+		//	httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -forceFlushAuthKey command line flag", authKey)
+		//	return true
+		//}
+		//logger.Infof("flushing storage to make pending data available for reading")
+		//strg.DebugFlush()
+		//return true
 	}
 	if !strings.HasPrefix(path, "/snapshot") {
 		return false
 	}
-	authKey := r.FormValue("authKey")
-	if authKey != *snapshotAuthKey {
-		httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -snapshotAuthKey command line flag", authKey)
-		return true
-	}
-	path = path[len("/snapshot"):]
-
-	switch path {
-	case "/create":
-		w.Header().Set("Content-Type", "application/json")
-		snapshotPath, err := strg.CreateSnapshot()
-		if err != nil {
-			err = fmt.Errorf("cannot create snapshot: %w", err)
-			jsonResponseError(w, err)
-			return true
-		}
-		fmt.Fprintf(w, `{"status":"ok","snapshot":%q}`, snapshotPath)
-		return true
-	case "/list":
-		w.Header().Set("Content-Type", "application/json")
-		snapshots, err := strg.ListSnapshots()
-		if err != nil {
-			err = fmt.Errorf("cannot list snapshots: %w", err)
-			jsonResponseError(w, err)
-			return true
-		}
-		fmt.Fprintf(w, `{"status":"ok","snapshots":[`)
-		if len(snapshots) > 0 {
-			for _, snapshot := range snapshots[:len(snapshots)-1] {
-				fmt.Fprintf(w, "\n%q,", snapshot)
-			}
-			fmt.Fprintf(w, "\n%q\n", snapshots[len(snapshots)-1])
-		}
-		fmt.Fprintf(w, `]}`)
-		return true
-	case "/delete":
-		w.Header().Set("Content-Type", "application/json")
-		snapshotName := r.FormValue("snapshot")
-		if err := strg.DeleteSnapshot(snapshotName); err != nil {
-			err = fmt.Errorf("cannot delete snapshot %q: %w", snapshotName, err)
-			jsonResponseError(w, err)
-			return true
-		}
-		fmt.Fprintf(w, `{"status":"ok"}`)
-		return true
-	case "/delete_all":
-		w.Header().Set("Content-Type", "application/json")
-		snapshots, err := strg.ListSnapshots()
-		if err != nil {
-			err = fmt.Errorf("cannot list snapshots: %w", err)
-			jsonResponseError(w, err)
-			return true
-		}
-		for _, snapshotName := range snapshots {
-			if err := strg.DeleteSnapshot(snapshotName); err != nil {
-				err = fmt.Errorf("cannot delete snapshot %q: %w", snapshotName, err)
-				jsonResponseError(w, err)
-				return true
-			}
-		}
-		fmt.Fprintf(w, `{"status":"ok"}`)
-		return true
-	default:
-		return false
-	}
+	return false
+	//authKey := r.FormValue("authKey")
+	//if authKey != *snapshotAuthKey {
+	//	httpserver.Errorf(w, r, "invalid authKey %q. It must match the value from -snapshotAuthKey command line flag", authKey)
+	//	return true
+	//}
+	//path = path[len("/snapshot"):]
+	//switch path {
+	//case "/create":
+	//	w.Header().Set("Content-Type", "application/json")
+	//	snapshotPath, err := strg.CreateSnapshot()
+	//	if err != nil {
+	//		err = fmt.Errorf("cannot create snapshot: %w", err)
+	//		jsonResponseError(w, err)
+	//		return true
+	//	}
+	//	fmt.Fprintf(w, `{"status":"ok","snapshot":%q}`, snapshotPath)
+	//	return true
+	//case "/list":
+	//	w.Header().Set("Content-Type", "application/json")
+	//	snapshots, err := strg.ListSnapshots()
+	//	if err != nil {
+	//		err = fmt.Errorf("cannot list snapshots: %w", err)
+	//		jsonResponseError(w, err)
+	//		return true
+	//	}
+	//	fmt.Fprintf(w, `{"status":"ok","snapshots":[`)
+	//	if len(snapshots) > 0 {
+	//		for _, snapshot := range snapshots[:len(snapshots)-1] {
+	//			fmt.Fprintf(w, "\n%q,", snapshot)
+	//		}
+	//		fmt.Fprintf(w, "\n%q\n", snapshots[len(snapshots)-1])
+	//	}
+	//	fmt.Fprintf(w, `]}`)
+	//	return true
+	//case "/delete":
+	//	w.Header().Set("Content-Type", "application/json")
+	//	snapshotName := r.FormValue("snapshot")
+	//	if err := strg.DeleteSnapshot(snapshotName); err != nil {
+	//		err = fmt.Errorf("cannot delete snapshot %q: %w", snapshotName, err)
+	//		jsonResponseError(w, err)
+	//		return true
+	//	}
+	//	fmt.Fprintf(w, `{"status":"ok"}`)
+	//	return true
+	//case "/delete_all":
+	//	w.Header().Set("Content-Type", "application/json")
+	//	snapshots, err := strg.ListSnapshots()
+	//	if err != nil {
+	//		err = fmt.Errorf("cannot list snapshots: %w", err)
+	//		jsonResponseError(w, err)
+	//		return true
+	//	}
+	//	for _, snapshotName := range snapshots {
+	//		if err := strg.DeleteSnapshot(snapshotName); err != nil {
+	//			err = fmt.Errorf("cannot delete snapshot %q: %w", snapshotName, err)
+	//			jsonResponseError(w, err)
+	//			return true
+	//		}
+	//	}
+	//	fmt.Fprintf(w, `{"status":"ok"}`)
+	//	return true
+	//default:
+	//	return false
+	//}
 }
 
 func initStaleSnapshotsRemover(strg *storage.Storage) {

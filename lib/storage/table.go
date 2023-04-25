@@ -12,6 +12,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/uint64set"
 )
 
@@ -122,7 +123,7 @@ func openTable(path string, getDeletedMetricIDs func() *uint64set.Set, retention
 	fs.MustRemoveTemporaryDirs(bigSnapshotsPath)
 
 	// Open partitions.
-	pts, err := openPartitions(smallPartitionsPath, bigPartitionsPath, getDeletedMetricIDs, retentionMsecs, isReadOnly)
+	pts, err := openRemotePartitions(smallPartitionsPath, bigPartitionsPath, getDeletedMetricIDs, retentionMsecs, isReadOnly)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open partitions in the table %q: %w", path, err)
 	}
@@ -142,8 +143,8 @@ func openTable(path string, getDeletedMetricIDs func() *uint64set.Set, retention
 	for _, pt := range pts {
 		tb.addPartitionNolock(pt)
 	}
-	tb.startRetentionWatcher()
-	tb.startFinalDedupWatcher()
+	//tb.startRetentionWatcher()
+	//tb.startFinalDedupWatcher()
 	return tb, nil
 }
 
@@ -508,10 +509,10 @@ func openPartitions(smallPartitionsPath, bigPartitionsPath string, getDeletedMet
 	// Certain partition directories in either `big` or `small` dir may be missing
 	// after restoring from backup. So populate partition names from both dirs.
 	ptNames := make(map[string]bool)
-	if err := populatePartitionNames(smallPartitionsPath, ptNames); err != nil {
+	if err := populateRemotePartitionNames(smallPartitionsPath, ptNames); err != nil {
 		return nil, err
 	}
-	if err := populatePartitionNames(bigPartitionsPath, ptNames); err != nil {
+	if err := populateRemotePartitionNames(bigPartitionsPath, ptNames); err != nil {
 		return nil, err
 	}
 	var pts []*partition
@@ -519,6 +520,33 @@ func openPartitions(smallPartitionsPath, bigPartitionsPath string, getDeletedMet
 		smallPartsPath := smallPartitionsPath + "/" + ptName
 		bigPartsPath := bigPartitionsPath + "/" + ptName
 		pt, err := openPartition(smallPartsPath, bigPartsPath, getDeletedMetricIDs, retentionMsecs, isReadOnly)
+		if err != nil {
+			mustClosePartitions(pts)
+			return nil, fmt.Errorf("cannot open partition %q: %w", ptName, err)
+		}
+		pts = append(pts, pt)
+	}
+	return pts, nil
+}
+
+func openRemotePartitions(smallPartitionsPath, bigPartitionsPath string, getDeletedMetricIDs func() *uint64set.Set, retentionMsecs int64, isReadOnly *uint32) ([]*partition, error) {
+	// Certain partition directories in either `big` or `small` dir may be missing
+	// after restoring from backup. So populate partition names from both dirs.
+	// override path
+	smallPartitionsPath = "/data/small"
+	bigPartitionsPath = "/data/big"
+	ptNames := make(map[string]bool)
+	if err := populateRemotePartitionNames(smallPartitionsPath, ptNames); err != nil {
+		return nil, err
+	}
+	if err := populateRemotePartitionNames(bigPartitionsPath, ptNames); err != nil {
+		return nil, err
+	}
+	var pts []*partition
+	for ptName := range ptNames {
+		smallPartsPath := smallPartitionsPath + "/" + ptName
+		bigPartsPath := bigPartitionsPath + "/" + ptName
+		pt, err := openRemotePartition(smallPartsPath, bigPartsPath, getDeletedMetricIDs, retentionMsecs, isReadOnly)
 		if err != nil {
 			mustClosePartitions(pts)
 			return nil, fmt.Errorf("cannot open partition %q: %w", ptName, err)
@@ -545,6 +573,22 @@ func populatePartitionNames(partitionsPath string, ptNames map[string]bool) erro
 			continue
 		}
 		ptName := fi.Name()
+		if ptName == "snapshots" {
+			// Skip directory with snapshots
+			continue
+		}
+		ptNames[ptName] = true
+	}
+	return nil
+}
+
+func populateRemotePartitionNames(partitionsPath string, ptNames map[string]bool) error {
+	fns, err := remotefs.ListRemoteDir(partitionsPath)
+	if err != nil {
+		return fmt.Errorf("cannot list remote dir with partitions %q: %w", partitionsPath, err)
+	}
+	for _, fn := range fns {
+		ptName := fn
 		if ptName == "snapshots" {
 			// Skip directory with snapshots
 			continue

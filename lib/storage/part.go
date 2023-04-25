@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/filestream"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 )
 
 var ibCache = blockcache.NewCache(getMaxIndexBlocksCacheSize)
@@ -78,6 +79,50 @@ func openFilePart(path string) (*part, error) {
 
 	size := timestampsSize + valuesSize + indexSize + metaindexSize
 	return newPart(&ph, path, size, metaindexFile, timestampsFile, valuesFile, indexFile)
+}
+
+func openRemotePart(path string) (*part, error) {
+	path = filepath.Clean(path)
+
+	var ph partHeader
+	if err := ph.ParseFromRemotePath(path); err != nil {
+		return nil, fmt.Errorf("cannot parse path to part: %w", err)
+	}
+
+	timestampsPath := path + "/timestamps.bin"
+	timestampsFile, err := remotefs.OpenRemoteReaderAt(timestampsPath)
+	if err != nil {
+		return nil, err
+	}
+	timestampsSize := timestampsFile.FileSize()
+
+	valuesPath := path + "/values.bin"
+	valuesFile, err := remotefs.OpenRemoteReaderAt(valuesPath)
+	if err != nil {
+		return nil, err
+	}
+	valuesSize := valuesFile.FileSize()
+	indexPath := path + "/index.bin"
+	indexFile, err := remotefs.OpenRemoteReaderAt(indexPath)
+	if err != nil {
+		return nil, err
+	}
+
+	indexSize := indexFile.FileSize()
+
+	metaindexPath := path + "/metaindex.bin"
+	metaindexFile, err := remotefs.OpenRemoteReader(metaindexPath)
+	if err != nil {
+		timestampsFile.MustClose()
+		valuesFile.MustClose()
+		indexFile.MustClose()
+		return nil, fmt.Errorf("cannot open metaindex file: %w", err)
+	}
+	metaindexSize := metaindexFile.FileSize()
+
+	size := timestampsSize + valuesSize + indexSize + metaindexSize
+	return newPart(&ph, path, size, metaindexFile, timestampsFile, valuesFile, indexFile)
+
 }
 
 // newPart returns new part initialized with the given arguments.

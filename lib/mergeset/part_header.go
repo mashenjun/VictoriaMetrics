@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 )
 
 type partHeader struct {
@@ -136,6 +137,75 @@ func (ph *partHeader) ParseFromPath(partPath string) error {
 	if ph.itemsCount != phj.ItemsCount {
 		return fmt.Errorf("invalid ItemsCount in %q; got %d; want %d", metadataPath, phj.ItemsCount, ph.itemsCount)
 	}
+	if ph.blocksCount != phj.BlocksCount {
+		return fmt.Errorf("invalid BlocksCount in %q; got %d; want %d", metadataPath, phj.BlocksCount, ph.blocksCount)
+	}
+
+	ph.firstItem = append(ph.firstItem[:0], phj.FirstItem...)
+	ph.lastItem = append(ph.lastItem[:0], phj.LastItem...)
+
+	return nil
+}
+
+func (ph *partHeader) ParseFromRemotePath(partPath string) error {
+	ph.Reset()
+
+	partPath = filepath.Clean(partPath)
+
+	// Extract encoded part name.
+	n := strings.LastIndexByte(partPath, '/')
+	if n < 0 {
+		return fmt.Errorf("cannot find encoded part name in the path %q", partPath)
+	}
+	partName := partPath[n+1:]
+
+	// PartName must have the following form:
+	// itemsCount_blocksCount_Garbage
+	a := strings.Split(partName, "_")
+	if len(a) != 3 {
+		return fmt.Errorf("unexpected number of substrings in the part name %q: got %d; want %d", partName, len(a), 3)
+	}
+
+	// Read itemsCount from partName.
+	itemsCount, err := strconv.ParseUint(a[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot parse itemsCount from partName %q: %w", partName, err)
+	}
+	ph.itemsCount = itemsCount
+	if ph.itemsCount <= 0 {
+		return fmt.Errorf("part %q cannot contain zero items", partPath)
+	}
+
+	// Read blocksCount from partName.
+	blocksCount, err := strconv.ParseUint(a[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot parse blocksCount from partName %q: %w", partName, err)
+	}
+	ph.blocksCount = blocksCount
+	if ph.blocksCount <= 0 {
+		return fmt.Errorf("part %q cannot contain zero blocks", partPath)
+	}
+	if ph.blocksCount > ph.itemsCount {
+		return fmt.Errorf("the number of blocks cannot exceed the number of items in the part %q; got blocksCount=%d, itemsCount=%d",
+			partPath, ph.blocksCount, ph.itemsCount)
+	}
+
+	// Read other ph fields from metadata.
+	metadataPath := partPath + "/metadata.json"
+	// todo
+	metadata, err := remotefs.ReadRemoteFile(metadataPath)
+	if err != nil {
+		return fmt.Errorf("cannot read remote file %q: %w", metadataPath, err)
+	}
+
+	var phj partHeaderJSON
+	if err := json.Unmarshal(metadata, &phj); err != nil {
+		return fmt.Errorf("cannot parse %q: %w", metadataPath, err)
+	}
+	if ph.itemsCount != phj.ItemsCount {
+		return fmt.Errorf("invalid ItemsCount in %q; got %d; want %d", metadataPath, phj.ItemsCount, ph.itemsCount)
+	}
+	ph.blocksCount = phj.BlocksCount
 	if ph.blocksCount != phj.BlocksCount {
 		return fmt.Errorf("invalid BlocksCount in %q; got %d; want %d", metadataPath, phj.BlocksCount, ph.blocksCount)
 	}

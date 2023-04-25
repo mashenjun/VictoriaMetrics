@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
@@ -82,7 +83,6 @@ func (ts *tableSearch) Init(tb *table, tsids []TSID, tr TimeRange) {
 	}
 
 	ts.ptws = tb.GetPartitions(ts.ptws[:0])
-
 	// Initialize the ptsPool.
 	if n := len(ts.ptws) - cap(ts.ptsPool); n > 0 {
 		ts.ptsPool = append(ts.ptsPool[:cap(ts.ptsPool)], make([]partitionSearch, n)...)
@@ -93,6 +93,7 @@ func (ts *tableSearch) Init(tb *table, tsids []TSID, tr TimeRange) {
 	}
 
 	// Initialize the ptsHeap.
+	startTime := time.Now()
 	ts.ptsHeap = ts.ptsHeap[:0]
 	for i := range ts.ptsPool {
 		pts := &ts.ptsPool[i]
@@ -106,6 +107,7 @@ func (ts *tableSearch) Init(tb *table, tsids []TSID, tr TimeRange) {
 		}
 		ts.ptsHeap = append(ts.ptsHeap, pts)
 	}
+	logger.Infof("DEBUG: ts init ptsHeap in %.3f seconds; len:%v", time.Since(startTime).Seconds(), len(ts.ptsHeap))
 	if len(ts.ptsHeap) == 0 {
 		ts.err = io.EOF
 		return

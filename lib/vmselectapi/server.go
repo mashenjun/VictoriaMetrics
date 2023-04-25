@@ -17,6 +17,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/netutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/querytracer"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/metrics"
 )
@@ -848,13 +849,15 @@ func (s *Server) processSearch(ctx *vmselectRequestCtx) error {
 
 	// Initiaialize the search.
 	startTime := time.Now()
+	startReadDur := remotefs.ReadDurationMillSecondCnt.Load()
 	bi, err := s.api.InitSearch(ctx.qt, &ctx.sq, ctx.deadline)
 	if err != nil {
 		return ctx.writeErrorMessage(err)
 	}
 	s.indexSearchDuration.UpdateDuration(startTime)
 	defer bi.MustClose()
-
+	readDur := time.Duration(remotefs.ReadDurationMillSecondCnt.Load()-startReadDur) * time.Millisecond
+	logger.Infof("DEBUG: server init search in %.3f seconds; read data in %.3f seconds", time.Since(startTime).Seconds(), readDur.Seconds())
 	// Send empty error message to vmselect.
 	if err := ctx.writeString(""); err != nil {
 		return fmt.Errorf("cannot send empty error message: %w", err)
@@ -862,6 +865,8 @@ func (s *Server) processSearch(ctx *vmselectRequestCtx) error {
 
 	// Send found blocks to vmselect.
 	blocksRead := 0
+	startTime = time.Now()
+	startReadDur = remotefs.ReadDurationMillSecondCnt.Load()
 	for bi.NextBlock(&ctx.mb) {
 		blocksRead++
 		s.metricBlocksRead.Inc()
@@ -876,7 +881,8 @@ func (s *Server) processSearch(ctx *vmselectRequestCtx) error {
 		return fmt.Errorf("search error: %w", err)
 	}
 	ctx.qt.Printf("sent %d blocks to vmselect", blocksRead)
-
+	readDur = time.Duration(remotefs.ReadDurationMillSecondCnt.Load()-startReadDur) * time.Millisecond
+	logger.Infof("DEBUG: server send block data to vmselect in %.3f seconds; read data in %.3f seconds", time.Since(startTime).Seconds(), readDur.Seconds())
 	// Send 'end of response' marker
 	if err := ctx.writeString(""); err != nil {
 		return fmt.Errorf("cannot send 'end of response' marker")

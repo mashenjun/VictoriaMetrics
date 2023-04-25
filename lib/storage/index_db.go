@@ -142,7 +142,42 @@ func openIndexDB(path string, s *Storage, rotationTimestamp uint64, isReadOnly *
 		return nil, fmt.Errorf("failed to parse indexdb path %q: %w", path, err)
 	}
 
-	tb, err := mergeset.OpenTable(path, invalidateTagFiltersCache, mergeTagToMetricIDsRows, isReadOnly)
+	// tb, err := mergeset.OpenTable(path, invalidateTagFiltersCache, mergeTagToMetricIDsRows, isReadOnly)
+	tb, err := mergeset.OpenTable(path, nil, mergeTagToMetricIDsRows, isReadOnly)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open indexDB %q: %w", path, err)
+	}
+
+	// Do not persist tagFiltersCache in files, since it is very volatile.
+	mem := memory.Allowed()
+
+	db := &indexDB{
+		refCount:          1,
+		generation:        gen,
+		rotationTimestamp: rotationTimestamp,
+		tb:                tb,
+		name:              name,
+
+		tagFiltersCache:            workingsetcache.New(getTagFilterCacheSize()),
+		s:                          s,
+		loopsPerDateTagFilterCache: workingsetcache.New(mem / 128),
+	}
+	return db, nil
+}
+
+func syncIndexDB(path string, s *Storage, rotationTimestamp uint64, isReadOnly *uint32) (*indexDB, error) {
+	if s == nil {
+		logger.Panicf("BUG: Storage must be nin-nil")
+	}
+
+	name := filepath.Base(path)
+	gen, err := strconv.ParseUint(name, 16, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse indexdb path %q: %w", path, err)
+	}
+
+	// tb, err := mergeset.OpenTable(path, invalidateTagFiltersCache, mergeTagToMetricIDsRows, isReadOnly)
+	tb, err := mergeset.SyncTable(path, s.path, nil, mergeTagToMetricIDsRows, isReadOnly)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open indexDB %q: %w", path, err)
 	}
@@ -1801,6 +1836,7 @@ func (is *indexSearch) loadDeletedMetricIDs() (*uint64set.Set, error) {
 		metricID := encoding.UnmarshalUint64(item)
 		dmis.Add(metricID)
 	}
+	logger.Infof("DEBUG: loadDeletedMetricIDs dmis has len: %v", dmis.Len())
 	if err := ts.Error(); err != nil {
 		return nil, err
 	}
@@ -1832,8 +1868,10 @@ func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 	// Slow path - search for tsids in the db and extDB.
 	accountID := tfss[0].accountID
 	projectID := tfss[0].projectID
+	startTime := time.Now()
 	is := db.getIndexSearch(accountID, projectID, deadline)
 	localTSIDs, err := is.searchTSIDs(qtChild, tfss, tr, maxMetrics)
+	logger.Infof("DEBUG: currdb is.searchTDIS in %.3f seconds; len(localTSIDs):%v", time.Since(startTime).Seconds(), len(localTSIDs))
 	db.putIndexSearch(is)
 	if err != nil {
 		return nil, err
@@ -1855,8 +1893,10 @@ func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 			extTSIDs = tsids
 			return
 		}
+		startTime := time.Now()
 		is := extDB.getIndexSearch(accountID, projectID, deadline)
 		extTSIDs, err = is.searchTSIDs(qtChild, tfss, tr, maxMetrics)
+		logger.Infof("DEBUG: extdb is.searchTDIS in %.3f seconds; len(extTSIDs):%v", time.Since(startTime).Seconds(), len(extTSIDs))
 		extDB.putIndexSearch(is)
 
 		sort.Slice(extTSIDs, func(i, j int) bool { return extTSIDs[i].Less(&extTSIDs[j]) })
@@ -2015,16 +2055,19 @@ func (is *indexSearch) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 		// Fast path - the index doesn't contain data for the given tr.
 		return nil, nil
 	}
+	startTime := time.Now()
 	metricIDs, err := is.searchMetricIDs(qt, tfss, tr, maxMetrics)
 	if err != nil {
 		return nil, err
 	}
+	logger.Infof("DEBUG: is.searchMetricIDs in %.3f seconds; len(metricIDs):%v", time.Since(startTime).Seconds(), len(metricIDs))
 	if len(metricIDs) == 0 {
 		// Nothing found.
 		return nil, nil
 	}
 
 	// Obtain TSID values for the given metricIDs.
+	startTime = time.Now()
 	tsids := make([]TSID, len(metricIDs))
 	i := 0
 	for loopsPaceLimiter, metricID := range metricIDs {
@@ -2060,6 +2103,7 @@ func (is *indexSearch) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, t
 		i++
 	}
 	tsids = tsids[:i]
+	logger.Infof("DEBUG: is obtain tsids in %.3f seconds; len(tsids):%v", time.Since(startTime).Seconds(), len(tsids))
 	qt.Printf("load %d tsids from %d metric ids", len(tsids), len(metricIDs))
 
 	// Do not sort the found tsids, since they will be sorted later.

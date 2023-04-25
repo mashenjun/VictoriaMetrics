@@ -19,6 +19,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storagepacelimiter"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/syncwg"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/uint64set"
@@ -276,6 +277,45 @@ func openPartition(smallPartsPath, bigPartsPath string, getDeletedMetricIDs func
 	pt.startRawRowsFlusher()
 	pt.startInmemoryPartsFlusher()
 	pt.startStalePartsRemover()
+
+	return pt, nil
+}
+
+// openRemotePartition opens the existing partition from the given paths.
+func openRemotePartition(smallPartsPath, bigPartsPath string, getDeletedMetricIDs func() *uint64set.Set, retentionMsecs int64, isReadOnly *uint32) (*partition, error) {
+	smallPartsPath = filepath.Clean(smallPartsPath)
+	bigPartsPath = filepath.Clean(bigPartsPath)
+
+	n := strings.LastIndexByte(smallPartsPath, '/')
+	if n < 0 {
+		return nil, fmt.Errorf("cannot find partition name from smallPartsPath %q; must be in the form /path/to/smallparts/YYYY_MM", smallPartsPath)
+	}
+	name := smallPartsPath[n+1:]
+
+	if !strings.HasSuffix(bigPartsPath, "/"+name) {
+		return nil, fmt.Errorf("patititon name in bigPartsPath %q doesn't match smallPartsPath %q; want %q", bigPartsPath, smallPartsPath, name)
+	}
+
+	smallParts, err := openRemoteParts(smallPartsPath, bigPartsPath, smallPartsPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open small parts from %q: %w", smallPartsPath, err)
+	}
+	bigParts, err := openRemoteParts(smallPartsPath, bigPartsPath, bigPartsPath)
+	if err != nil {
+		mustCloseParts(smallParts)
+		return nil, fmt.Errorf("cannot open big parts from %q: %w", bigPartsPath, err)
+	}
+
+	pt := newPartition(name, smallPartsPath, bigPartsPath, getDeletedMetricIDs, retentionMsecs, isReadOnly)
+	pt.smallParts = smallParts
+	pt.bigParts = bigParts
+	if err := pt.tr.fromPartitionName(name); err != nil {
+		return nil, fmt.Errorf("cannot obtain partition time range from smallPartsPath %q: %w", smallPartsPath, err)
+	}
+	//pt.startMergeWorkers()
+	//pt.startRawRowsFlusher()
+	//pt.startInmemoryPartsFlusher()
+	//pt.startStalePartsRemover()
 
 	return pt, nil
 }
@@ -1612,6 +1652,31 @@ func openParts(pathPrefix1, pathPrefix2, path string) ([]*partWrapper, error) {
 		pws = append(pws, pw)
 	}
 
+	return pws, nil
+}
+
+func openRemoteParts(pathPrefix1, pathPrefix2, path string) ([]*partWrapper, error) {
+	names, err := remotefs.ListRemoteDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read remote directory: %w", err)
+	}
+	var pws []*partWrapper
+	for _, fn := range names {
+		partPath := path + "/" + fn
+		startTime := time.Now()
+		p, err := openRemotePart(partPath)
+		if err != nil {
+			mustCloseParts(pws)
+			return nil, fmt.Errorf("cannot open part %q: %w", partPath, err)
+		}
+		logger.Infof("opened part %q in %.3f seconds", partPath, time.Since(startTime).Seconds())
+
+		pw := &partWrapper{
+			p:        p,
+			refCount: 1,
+		}
+		pws = append(pws, pw)
+	}
 	return pws, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
@@ -184,10 +185,13 @@ func (s *Search) Init(qt *querytracer.Tracer, storage *Storage, tfss []*TagFilte
 	s.deadline = deadline
 	s.needClosing = true
 
+	startTime := time.Now()
 	tsids, err := storage.searchTSIDs(qt, tfss, tr, maxMetrics, deadline)
+	logger.Infof("DEBUG: storage.searchTSIDS in %.3f seconds", time.Since(startTime).Seconds())
 	if err == nil {
 		err = storage.prefetchMetricNames(qt, tsids, deadline)
 	}
+
 	// It is ok to call Init on error from storage.searchTSIDs.
 	// Init must be called before returning because it will fail
 	// on Seach.MustClose otherwise.

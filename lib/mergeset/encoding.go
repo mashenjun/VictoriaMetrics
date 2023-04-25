@@ -412,7 +412,7 @@ func (ib *inmemoryBlock) UnmarshalData(sb *storageBlock, firstItem, commonPrefix
 	// Unmarshal items data.
 	bb.B, err = encoding.DecompressZSTD(bb.B[:0], sb.itemsData)
 	if err != nil {
-		return fmt.Errorf("cannot decompress lensData: %w", err)
+		return fmt.Errorf("cannot decompress itemsData: %w", err)
 	}
 	// Resize ib.data to dataLen instead of maxInmemoryBlockSize,
 	// since the data isn't going to be resized after unmarshaling.

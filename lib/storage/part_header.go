@@ -119,6 +119,62 @@ func (ph *partHeader) ParseFromPath(path string) error {
 	return nil
 }
 
+func (ph *partHeader) ParseFromRemotePath(path string) error {
+	ph.Reset()
+
+	path = filepath.Clean(path)
+
+	// Extract encoded part name.
+	n := strings.LastIndexByte(path, '/')
+	if n < 0 {
+		return fmt.Errorf("cannot find encoded part name in the path %q", path)
+	}
+	partName := path[n+1:]
+
+	// PartName must have the following form:
+	// RowsCount_BlocksCount_MinTimestamp_MaxTimestamp_Garbage
+	a := strings.Split(partName, "_")
+	if len(a) != 5 {
+		return fmt.Errorf("unexpected number of substrings in the part name %q: got %d; want %d", partName, len(a), 5)
+	}
+
+	var err error
+
+	ph.RowsCount, err = strconv.ParseUint(a[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot parse rowsCount from partName %q: %w", partName, err)
+	}
+	ph.BlocksCount, err = strconv.ParseUint(a[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot parse blocksCount from partName %q: %w", partName, err)
+	}
+	ph.MinTimestamp, err = fromUserReadableTimestamp(a[2])
+	if err != nil {
+		return fmt.Errorf("cannot parse minTimestamp from partName %q: %w", partName, err)
+	}
+	ph.MaxTimestamp, err = fromUserReadableTimestamp(a[3])
+	if err != nil {
+		return fmt.Errorf("cannot parse maxTimestamp from partName %q: %w", partName, err)
+	}
+
+	if ph.MinTimestamp > ph.MaxTimestamp {
+		return fmt.Errorf("minTimestamp cannot exceed maxTimestamp; got %d vs %d", ph.MinTimestamp, ph.MaxTimestamp)
+	}
+	if ph.RowsCount <= 0 {
+		return fmt.Errorf("rowsCount must be greater than 0; got %d", ph.RowsCount)
+	}
+	if ph.BlocksCount <= 0 {
+		return fmt.Errorf("blocksCount must be greater than 0; got %d", ph.BlocksCount)
+	}
+	if ph.BlocksCount > ph.RowsCount {
+		return fmt.Errorf("blocksCount cannot be bigger than rowsCount; got blocksCount=%d, rowsCount=%d", ph.BlocksCount, ph.RowsCount)
+	}
+	// use 1ms for reading from s3 case
+	ph.MinDedupInterval = 1
+
+	return nil
+}
+
 // Reset resets the ph.
 func (ph *partHeader) Reset() {
 	ph.RowsCount = 0

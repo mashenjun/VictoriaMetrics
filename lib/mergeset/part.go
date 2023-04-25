@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/filestream"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 )
 
 var idxbCache = blockcache.NewCache(getMaxIndexBlocksCacheSize)
@@ -96,6 +97,102 @@ func openFilePart(path string) (*part, error) {
 
 	size := metaindexSize + indexSize + itemsSize + lensSize
 	return newPart(&ph, path, size, metaindexFile, indexFile, itemsFile, lensFile)
+}
+
+func openRemotePart(path string) (*part, error) {
+	path = filepath.Clean(path)
+	// todo
+	var ph partHeader
+	if err := ph.ParseFromRemotePath(path); err != nil {
+		return nil, fmt.Errorf("cannot parse path to part: %w", err)
+	}
+
+	metaindexPath := path + "/metaindex.bin"
+	metaindexFile, err := remotefs.OpenRemoteReader(metaindexPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open %q: %w", metaindexPath, err)
+	}
+	metaindexSize := metaindexFile.FileSize()
+
+	indexPath := path + "/index.bin"
+	indexFile, err := remotefs.OpenRemoteReaderAt(indexPath)
+	if err != nil {
+		return nil, err
+	}
+	indexSize := indexFile.FileSize()
+
+	itemsPath := path + "/items.bin"
+	itemsFile, err := remotefs.OpenRemoteReaderAt(itemsPath)
+	if err != nil {
+		return nil, err
+	}
+	itemsSize := itemsFile.FileSize()
+
+	lensPath := path + "/lens.bin"
+	lensFile, err := remotefs.OpenRemoteReaderAt(lensPath)
+	if err != nil {
+		return nil, err
+	}
+	lensSize := lensFile.FileSize()
+
+	size := metaindexSize + indexSize + itemsSize + lensSize
+	return newPart(&ph, path, size, metaindexFile, indexFile, itemsFile, lensFile)
+}
+
+func syncRemotePart(remotePath string, localDir string) (*part, error) {
+	path := filepath.Clean(remotePath)
+	// todo
+	var ph partHeader
+	if err := ph.ParseFromRemotePath(path); err != nil {
+		return nil, fmt.Errorf("cannot parse path to part: %w", err)
+	}
+
+	metaindexPath := path + "/metaindex.bin"
+	metaindexFile, err := remotefs.OpenRemoteReader(metaindexPath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open %q: %w", metaindexPath, err)
+	}
+	metaindexSize := metaindexFile.FileSize()
+
+	indexPath := path + "/index.bin"
+	indexFile, err := remotefs.OpenRemoteReaderAt(indexPath)
+	if err != nil {
+		return nil, err
+	}
+	indexSize := indexFile.FileSize()
+	if indexSize <= 1024*1024*1024 {
+		if err := indexFile.SyncToLocal(localDir); err != nil {
+			return nil, err
+		}
+	}
+
+	itemsPath := path + "/items.bin"
+	itemsFile, err := remotefs.OpenRemoteReaderAt(itemsPath)
+	if err != nil {
+		return nil, err
+	}
+	itemsSize := itemsFile.FileSize()
+	if itemsSize <= 1024*1024*1024 {
+		if err := itemsFile.SyncToLocal(localDir); err != nil {
+			return nil, err
+		}
+	}
+
+	lensPath := path + "/lens.bin"
+	lensFile, err := remotefs.OpenRemoteReaderAt(lensPath)
+	if err != nil {
+		return nil, err
+	}
+	lensSize := lensFile.FileSize()
+	if lensSize <= 1024*1024*1024 {
+		if err := lensFile.SyncToLocal(localDir); err != nil {
+			return nil, err
+		}
+	}
+
+	size := metaindexSize + indexSize + itemsSize + lensSize
+	return newPart(&ph, path, size, metaindexFile, indexFile, itemsFile, lensFile)
+
 }
 
 func newPart(ph *partHeader, path string, size uint64, metaindexReader filestream.ReadCloser, indexFile, itemsFile, lensFile fs.MustReadAtCloser) (*part, error) {

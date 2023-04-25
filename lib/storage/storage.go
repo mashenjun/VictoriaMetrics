@@ -26,6 +26,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/querytracer"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/remotefs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/snapshot"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storagepacelimiter"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timerpool"
@@ -250,7 +251,7 @@ func OpenStorage(path string, retentionMsecs int64, maxHourlySeries, maxDailySer
 		return nil, fmt.Errorf("cannot create %q: %w", idbSnapshotsPath, err)
 	}
 	fs.MustRemoveTemporaryDirs(idbSnapshotsPath)
-	idbCurr, idbPrev, err := s.openIndexDBTables(idbPath)
+	idbCurr, idbPrev, err := s.syncRemoteIndexDBTables(idbPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open indexdb tables at %q: %w", idbPath, err)
 	}
@@ -2660,6 +2661,100 @@ func (s *Storage) openIndexDBTables(path string) (curr, prev *indexDB, err error
 	}
 	prevPath := path + "/" + tableNames[len(tableNames)-2]
 	prev, err = openIndexDB(prevPath, s, 0, &s.isReadOnly)
+	if err != nil {
+		curr.MustClose()
+		return nil, nil, fmt.Errorf("cannot open prev indexdb table at %q: %w", prevPath, err)
+	}
+
+	return curr, prev, nil
+}
+
+func (s *Storage) openRemoteIndexDBTables(path string) (curr, prev *indexDB, err error) {
+	if err := fs.MkdirAllIfNotExist(path); err != nil {
+		return nil, nil, fmt.Errorf("cannot create directory %q: %w", path, err)
+	}
+
+	// Search for the two most recent tables - the last one is active,
+	// the previous one contains backup data.
+	// override path
+	fns, err := remotefs.ListRemoteDir("/indexdb")
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read remote indexdb tables: %w", err)
+	}
+
+	var tableNames []string
+	for _, fn := range fns {
+		tableName := fn
+		if !indexDBTableNameRegexp.MatchString(tableName) {
+			// Skip invalid directories.
+			continue
+		}
+		tableNames = append(tableNames, tableName)
+	}
+	// Invariant: len(tableNames) >= 2
+	if len(tableNames) < 2 {
+		logger.Infof("list remote dir result:%v, tableNames:%v", fns, tableNames)
+		return nil, nil, fmt.Errorf("remote indexdb less than two, indexdb: %v", tableNames)
+	}
+	sort.Slice(tableNames, func(i, j int) bool {
+		return tableNames[i] < tableNames[j]
+	})
+
+	// Open the last two tables.
+	currPath := "/indexdb" + "/" + tableNames[len(tableNames)-1]
+	curr, err = openIndexDB(currPath, s, 0, &s.isReadOnly)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot open curr indexdb table at %q: %w", currPath, err)
+	}
+	prevPath := "/indexdb" + "/" + tableNames[len(tableNames)-2]
+	prev, err = openIndexDB(prevPath, s, 0, &s.isReadOnly)
+	if err != nil {
+		curr.MustClose()
+		return nil, nil, fmt.Errorf("cannot open prev indexdb table at %q: %w", prevPath, err)
+	}
+
+	return curr, prev, nil
+}
+
+func (s *Storage) syncRemoteIndexDBTables(path string) (curr, prev *indexDB, err error) {
+	if err := fs.MkdirAllIfNotExist(path); err != nil {
+		return nil, nil, fmt.Errorf("cannot create directory %q: %w", path, err)
+	}
+
+	// Search for the two most recent tables - the last one is active,
+	// the previous one contains backup data.
+	// override path
+	fns, err := remotefs.ListRemoteDir("/indexdb")
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read remote indexdb tables: %w", err)
+	}
+
+	var tableNames []string
+	for _, fn := range fns {
+		tableName := fn
+		if !indexDBTableNameRegexp.MatchString(tableName) {
+			// Skip invalid directories.
+			continue
+		}
+		tableNames = append(tableNames, tableName)
+	}
+	// Invariant: len(tableNames) >= 2
+	if len(tableNames) < 2 {
+		logger.Infof("list remote dir result:%v, tableNames:%v", fns, tableNames)
+		return nil, nil, fmt.Errorf("remote indexdb less than two, indexdb: %v", tableNames)
+	}
+	sort.Slice(tableNames, func(i, j int) bool {
+		return tableNames[i] < tableNames[j]
+	})
+
+	// Open the last two tables.
+	currPath := "/indexdb" + "/" + tableNames[len(tableNames)-1]
+	curr, err = syncIndexDB(currPath, s, 0, &s.isReadOnly)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot open curr indexdb table at %q: %w", currPath, err)
+	}
+	prevPath := "/indexdb" + "/" + tableNames[len(tableNames)-2]
+	prev, err = syncIndexDB(prevPath, s, 0, &s.isReadOnly)
 	if err != nil {
 		curr.MustClose()
 		return nil, nil, fmt.Errorf("cannot open prev indexdb table at %q: %w", prevPath, err)

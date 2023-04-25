@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
@@ -81,7 +82,6 @@ func (pts *partitionSearch) Init(pt *partition, tsids []TSID, tr TimeRange) {
 	}
 
 	pts.pws = pt.GetParts(pts.pws[:0])
-
 	// Initialize psPool.
 	if n := len(pts.pws) - cap(pts.psPool); n > 0 {
 		pts.psPool = append(pts.psPool[:cap(pts.psPool)], make([]partSearch, n)...)
@@ -92,6 +92,7 @@ func (pts *partitionSearch) Init(pt *partition, tsids []TSID, tr TimeRange) {
 	}
 
 	// Initialize the psHeap.
+	startTime := time.Now()
 	pts.psHeap = pts.psHeap[:0]
 	for i := range pts.psPool {
 		ps := &pts.psPool[i]
@@ -105,6 +106,8 @@ func (pts *partitionSearch) Init(pt *partition, tsids []TSID, tr TimeRange) {
 		}
 		pts.psHeap = append(pts.psHeap, ps)
 	}
+	logger.Infof("DEBUG: pts init psHeap in %.3f seconds; len:%v", time.Since(startTime).Seconds(), len(pts.psPool))
+
 	if len(pts.psHeap) == 0 {
 		pts.err = io.EOF
 		return
