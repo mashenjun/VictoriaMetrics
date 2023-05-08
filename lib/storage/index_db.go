@@ -1871,7 +1871,8 @@ func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 	startTime := time.Now()
 	is := db.getIndexSearch(accountID, projectID, deadline)
 	localTSIDs, err := is.searchTSIDs(qtChild, tfss, tr, maxMetrics)
-	logger.Infof("DEBUG: currdb is.searchTDIS in %.3f seconds; len(localTSIDs):%v", time.Since(startTime).Seconds(), len(localTSIDs))
+	seekDur := time.Duration(is.ts.SeekDurationMillSecond.Load()) * time.Millisecond
+	logger.Infof("DEBUG: currdb do is.searchTDIS in %.3f seconds; seek in %.3f seconds; len(localTSIDs):%v", time.Since(startTime).Seconds(), seekDur.Seconds(), len(localTSIDs))
 	db.putIndexSearch(is)
 	if err != nil {
 		return nil, err
@@ -1896,7 +1897,7 @@ func (db *indexDB) searchTSIDs(qt *querytracer.Tracer, tfss []*TagFilters, tr Ti
 		startTime := time.Now()
 		is := extDB.getIndexSearch(accountID, projectID, deadline)
 		extTSIDs, err = is.searchTSIDs(qtChild, tfss, tr, maxMetrics)
-		logger.Infof("DEBUG: extdb is.searchTDIS in %.3f seconds; len(extTSIDs):%v", time.Since(startTime).Seconds(), len(extTSIDs))
+		logger.Infof("DEBUG: extdb do is.searchTDIS in %.3f seconds; len(extTSIDs):%v", time.Since(startTime).Seconds(), len(extTSIDs))
 		extDB.putIndexSearch(is)
 
 		sort.Slice(extTSIDs, func(i, j int) bool { return extTSIDs[i].Less(&extTSIDs[j]) })

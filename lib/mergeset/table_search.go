@@ -5,6 +5,8 @@ import (
 	"container/heap"
 	"fmt"
 	"io"
+	"sync/atomic"
+	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
@@ -28,6 +30,9 @@ type TableSearch struct {
 
 	nextItemNoop bool
 	needClosing  bool
+
+	// Debug purpose
+	SeekDurationMillSecond *atomic.Int64
 }
 
 func (ts *TableSearch) reset() {
@@ -78,6 +83,7 @@ func (ts *TableSearch) Init(tb *Table) {
 	for i, pw := range ts.pws {
 		ts.psPool[i].Init(pw.p)
 	}
+	ts.SeekDurationMillSecond = &atomic.Int64{}
 }
 
 // Seek seeks for the first item greater or equal to k in the ts.
@@ -92,7 +98,11 @@ func (ts *TableSearch) Seek(k []byte) {
 	ts.psHeap = ts.psHeap[:0]
 	for i := range ts.psPool {
 		ps := &ts.psPool[i]
+		startTs := time.Now()
 		ps.Seek(k)
+		dur := time.Since(startTs)
+		ts.SeekDurationMillSecond.Add(dur.Milliseconds())
+		logger.Infof("DEBUG: ts do seek in %.3f seconds", dur.Seconds())
 		if !ps.NextItem() {
 			if err := ps.Error(); err != nil {
 				// Return only the first error, since it has no sense in returning all errors.

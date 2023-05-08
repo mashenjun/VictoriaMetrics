@@ -2,13 +2,13 @@ package mergeset
 
 import (
 	"fmt"
-	"io"
-	"sort"
-
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/blockcache"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"io"
+	"sort"
+	"sync"
 )
 
 type partSearch struct {
@@ -311,11 +311,25 @@ func (ps *partSearch) getInmemoryBlock(bh *blockHeader) (*inmemoryBlock, error) 
 func (ps *partSearch) readInmemoryBlock(bh *blockHeader) (*inmemoryBlock, error) {
 	ps.sb.Reset()
 
-	ps.sb.itemsData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.itemsData, int(bh.itemsBlockSize))
-	ps.p.itemsFile.MustReadAt(ps.sb.itemsData, int64(bh.itemsBlockOffset))
+	//ps.sb.itemsData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.itemsData, int(bh.itemsBlockSize))
+	//ps.p.itemsFile.MustReadAt(ps.sb.itemsData, int64(bh.itemsBlockOffset))
+	//
+	//ps.sb.lensData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.lensData, int(bh.lensBlockSize))
+	//ps.p.lensFile.MustReadAt(ps.sb.lensData, int64(bh.lensBlockOffset))
 
-	ps.sb.lensData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.lensData, int(bh.lensBlockSize))
-	ps.p.lensFile.MustReadAt(ps.sb.lensData, int64(bh.lensBlockOffset))
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ps.sb.itemsData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.itemsData, int(bh.itemsBlockSize))
+		ps.p.itemsFile.MustReadAt(ps.sb.itemsData, int64(bh.itemsBlockOffset))
+	}()
+	go func() {
+		defer wg.Done()
+		ps.sb.lensData = bytesutil.ResizeNoCopyMayOverallocate(ps.sb.lensData, int(bh.lensBlockSize))
+		ps.p.lensFile.MustReadAt(ps.sb.lensData, int64(bh.lensBlockOffset))
+	}()
+	wg.Wait()
 
 	ib := getInmemoryBlock()
 	if err := ib.UnmarshalData(&ps.sb, bh.firstItem, bh.commonPrefix, bh.itemsCount, bh.marshalType); err != nil {

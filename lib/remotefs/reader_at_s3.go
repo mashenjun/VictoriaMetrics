@@ -7,16 +7,16 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/backup/fscommon"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/minio/minio-go/v7"
-	"go.uber.org/atomic"
 	"golang.org/x/sync/errgroup"
 	"os"
 	pathlib "path"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-var ReadDurationMillSecondCnt = atomic.NewInt64(0)
+var ReadDurationMillSecond = &atomic.Int64{}
 
 // remotePart wraps `Part` and `Object` for performance tuning
 type remotePart struct {
@@ -144,7 +144,7 @@ func (rra *RemoteReaderAt) MustReadAt(p []byte, off int64) {
 			logger.Panicf("FATAL: unexpected number of bytes read; got %d; want %d", n, len(p))
 		}
 		dur := time.Since(startTime)
-		ReadDurationMillSecondCnt.Add(dur.Milliseconds())
+		ReadDurationMillSecond.Add(dur.Milliseconds())
 		logger.Infof("DEBUG: MustReadAt from local path: %q; len(p): %v; real off: %v in %.3f seconds; file size: %v MB", rra.remotePath, len(p), off-int64(targetPart.Offset), dur.Seconds(), rra.fileSize/1024/1024)
 		return
 	}
@@ -173,7 +173,7 @@ func (rra *RemoteReaderAt) MustReadAt(p []byte, off int64) {
 		logger.Panicf("FATAL: unexpected number of bytes read; got %d; want %d", n, len(p))
 	}
 	dur := time.Since(startTime)
-	ReadDurationMillSecondCnt.Add(dur.Milliseconds())
+	ReadDurationMillSecond.Add(dur.Milliseconds())
 	logger.Infof("DEBUG: MustReadAt from remote path: %q; len(p): %v; real off: %v in %.3f seconds; file size: %v MB", rra.remotePath, len(p), off-int64(targetPart.Offset), dur.Seconds(), rra.fileSize/1024/1024)
 	//logger.Infof("DEBUG: MustReadAt remotePath: %q; len(p): %v; off: %v in %.3f seconds", rra.remotePath, len(p), off, time.Since(startTime).Seconds())
 }
@@ -305,7 +305,7 @@ func OpenRemoteReaderAt(path string) (*RemoteReaderAt, error) {
 		remoteParts: remoteParts,
 		remoteFS:    remoteFS,
 		fileSize:    remoteParts[0].FileSize,
-		syncToLocal: atomic.NewBool(false),
+		syncToLocal: &atomic.Bool{},
 
 		remotePath: dir,
 	}

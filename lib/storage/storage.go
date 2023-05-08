@@ -251,7 +251,7 @@ func OpenStorage(path string, retentionMsecs int64, maxHourlySeries, maxDailySer
 		return nil, fmt.Errorf("cannot create %q: %w", idbSnapshotsPath, err)
 	}
 	fs.MustRemoveTemporaryDirs(idbSnapshotsPath)
-	idbCurr, idbPrev, err := s.syncRemoteIndexDBTables(idbPath)
+	idbCurr, idbPrev, err := s.openRemoteIndexDBTables(idbPath)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open indexdb tables at %q: %w", idbPath, err)
 	}
